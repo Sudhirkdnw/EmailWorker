@@ -22,10 +22,7 @@ console.log("==========================================");
 
 // Validate Env
 if (!process.env.MONGO_URI) throw new Error("MONGO_URI is required");
-if (!process.env.RESEND_API_KEY) throw new Error("RESEND_API_KEY is required");
-if (!process.env.EMAIL_FROM) throw new Error("EMAIL_FROM is required");
 
-const resend = new Resend(process.env.RESEND_API_KEY);
 let redisSubscriber = null;
 
 // Retry Utils
@@ -72,6 +69,18 @@ function isRetryableError(error) {
     );
 }
 
+let cachedResend = null;
+let cachedApiKey = "";
+
+function getResendClient(apiKey) {
+    if (cachedResend && cachedApiKey === apiKey) {
+        return cachedResend;
+    }
+    cachedResend = new Resend(apiKey);
+    cachedApiKey = apiKey;
+    return cachedResend;
+}
+
 class EmailQueueWorker {
     constructor() {
         this.activeQueue = new Set();
@@ -84,7 +93,7 @@ class EmailQueueWorker {
         this.sweepPendingJobs();
         this.workerInterval = setInterval(() => {
             this.sweepPendingJobs();
-        }, 45000);
+        }, 3000); // Poll MongoDB every 3 seconds for near-instant fallback sending
     }
 
     stop() {
@@ -136,30 +145,40 @@ class EmailQueueWorker {
 
             let fromName = "Inistnt";
             let fromAddress = process.env.EMAIL_FROM;
+            let resendApiKey = process.env.RESEND_API_KEY;
+            let replyToAddress = "";
 
             try {
                 // Fetch from settings collection directly via mongoose connection db
                 const nameDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'mail_from_name' });
-                if (nameDoc && nameDoc.value) {
-                    fromName = nameDoc.value;
-                } else {
-                    const platformDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'platform_name' });
-                    if (platformDoc && platformDoc.value) {
-                        fromName = platformDoc.value;
-                    }
-                }
+                if (nameDoc && nameDoc.value) fromName = nameDoc.value;
 
                 const addressDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'mail_from_address' });
-                if (addressDoc && addressDoc.value) {
-                    fromAddress = addressDoc.value;
-                }
+                if (addressDoc && addressDoc.value) fromAddress = addressDoc.value;
+
+                const keyDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'resend_api_key' });
+                if (keyDoc && keyDoc.value) resendApiKey = keyDoc.value;
+
+                const replyDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'mail_reply_to' });
+                if (replyDoc && replyDoc.value) replyToAddress = replyDoc.value;
             } catch (err) {
                 console.warn("[Email Worker] Failed to load mail settings from DB:", err.message);
             }
 
+            // Fallback to environment variables if not set in DB
+            fromAddress = fromAddress || process.env.EMAIL_FROM;
+            resendApiKey = resendApiKey || process.env.RESEND_API_KEY;
+
+            if (!resendApiKey) {
+                throw new Error("RESEND_API_KEY is not defined (neither in DB settings nor in Env).");
+            }
+            if (!fromAddress) {
+                throw new Error("EMAIL_FROM is not defined (neither in DB settings nor in Env).");
+            }
+
             // Extract email address cleanly
             let cleanAddress = fromAddress;
-            if (fromAddress.includes("<")) {
+            if (fromAddress && fromAddress.includes("<")) {
                 const match = fromAddress.match(/<([^>]+)>/);
                 if (match) {
                     cleanAddress = match[1];
@@ -168,13 +187,20 @@ class EmailQueueWorker {
 
             const resolvedFrom = `"${fromName}" <${cleanAddress}>`;
 
+            const resend = getResendClient(resendApiKey);
+
             const payload = {
                 from: resolvedFrom,
                 to: [dbLog.to],
                 subject: dbLog.subject,
                 html: dbLog.metadata?.htmlBody || `<p>${dbLog.subject}</p>`
             };
-            if (process.env.EMAIL_REPLY_TO) payload.reply_to = process.env.EMAIL_REPLY_TO;
+
+            if (replyToAddress) {
+                payload.reply_to = replyToAddress;
+            } else if (process.env.EMAIL_REPLY_TO) {
+                payload.reply_to = process.env.EMAIL_REPLY_TO;
+            }
 
             const sendPromise = resend.emails.send(payload);
             const response = await withTimeout(sendPromise, 15000);
@@ -185,9 +211,9 @@ class EmailQueueWorker {
 
             dbLog.status = "sent";
             dbLog.sentAt = new Date();
-            dbLog.metadata.resendId = response.data?.id;
+            dbLog.metadata.resendId = response.data?.id; // Keep resendId for compatibility with backend logs UI
             await this.releaseLock(dbLog, "sent");
-            console.log(`✅ [Email Queue] Sent email to ${dbLog.to} (Log: ${dbLog._id})`);
+            console.log(`✅ [Email Queue] Sent email to ${dbLog.to} via Resend (MessageID: ${response.data?.id})`);
 
         } catch (error) {
             console.error(`⚠️ [Email Queue] Delivery failed for job <${dbLogId}>:`, error.message);
