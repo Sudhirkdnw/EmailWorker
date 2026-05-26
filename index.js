@@ -134,9 +134,39 @@ class EmailQueueWorker {
             dbLog.attempts = (dbLog.attempts || 0) + 1;
             await dbLog.save();
 
-            const platformName = "Social Mini";
-            const emailFrom = process.env.EMAIL_FROM;
-            const resolvedFrom = emailFrom.includes("<") ? emailFrom : `"${platformName}" <${emailFrom}>`;
+            let fromName = "Inistnt";
+            let fromAddress = process.env.EMAIL_FROM;
+
+            try {
+                // Fetch from settings collection directly via mongoose connection db
+                const nameDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'mail_from_name' });
+                if (nameDoc && nameDoc.value) {
+                    fromName = nameDoc.value;
+                } else {
+                    const platformDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'platform_name' });
+                    if (platformDoc && platformDoc.value) {
+                        fromName = platformDoc.value;
+                    }
+                }
+
+                const addressDoc = await mongoose.connection.db.collection('settings').findOne({ key: 'mail_from_address' });
+                if (addressDoc && addressDoc.value) {
+                    fromAddress = addressDoc.value;
+                }
+            } catch (err) {
+                console.warn("[Email Worker] Failed to load mail settings from DB:", err.message);
+            }
+
+            // Extract email address cleanly
+            let cleanAddress = fromAddress;
+            if (fromAddress.includes("<")) {
+                const match = fromAddress.match(/<([^>]+)>/);
+                if (match) {
+                    cleanAddress = match[1];
+                }
+            }
+
+            const resolvedFrom = `"${fromName}" <${cleanAddress}>`;
 
             const payload = {
                 from: resolvedFrom,
