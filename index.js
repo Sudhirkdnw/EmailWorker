@@ -11,7 +11,7 @@ const { Redis } = require('ioredis');
 // Load environment variables from the local .env file
 dotenv.config();
 
-const { EmailLog } = require('@social-mini/shared-models');
+const EmailLog = require('./models/emailLog.model');
 
 const WORKER_ID = `worker-${crypto.randomBytes(6).toString("hex")}`;
 const MAX_ATTEMPTS = 4;
