@@ -9,7 +9,7 @@
   "dependencies": {
     "dotenv": "^17.3.1",
     "ioredis": "^5.10.1",
-    "mongoose": "^9.3.3",
+    "mongoose": "^9.6.2",
     "resend": "^6.12.4"
   }
 }
