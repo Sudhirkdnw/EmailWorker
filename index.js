@@ -143,7 +143,7 @@ class EmailQueueWorker {
             dbLog.attempts = (dbLog.attempts || 0) + 1;
             await dbLog.save();
 
-            let fromName = "Inistnt";
+            let fromName = "Hykee";
             let fromAddress = process.env.EMAIL_FROM;
             let resendApiKey = process.env.RESEND_API_KEY;
             let replyToAddress = "";
