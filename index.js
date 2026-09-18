@@ -3,10 +3,16 @@
  */
 const dotenv = require('dotenv');
 const path = require('path');
+const dns = require('dns');
 const mongoose = require('mongoose');
 const { Resend } = require('resend');
 const crypto = require('crypto');
 const { Redis } = require('ioredis');
+
+// Ensure reliable DNS resolution for MongoDB Atlas SRV connection strings
+try {
+    dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+} catch (e) {}
 
 // Load environment variables from the local .env file
 dotenv.config();
@@ -285,6 +291,10 @@ class EmailQueueWorker {
             }
         } catch (error) {
             console.error("[Email Queue] Sweeper execution failure:", error.message);
+            if (error.message && (error.message.includes("primary marked stale") || error.message.includes("topology closed"))) {
+                console.error("🛑 Unrecoverable MongoDB topology mismatch detected. Exiting to allow PM2 to perform a clean reconnect...");
+                process.exit(1);
+            }
         } finally {
             this.isProcessing = false;
         }
